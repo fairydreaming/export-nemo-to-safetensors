@@ -104,7 +104,6 @@ def convert_nemo_model(model_dir: Path, output_dir: Path):
     for subdir in (model_dir/"model_weights").iterdir():
         if not subdir.is_dir() or not (subdir / '.zarray').exists():
             continue
-        sharded_state_dict = {}
         key = subdir.name
 
         arr = zarr.convenience.open(subdir,'r')
@@ -129,31 +128,43 @@ def convert_nemo_model(model_dir: Path, output_dir: Path):
     # have the index ordered mostly for readability's sake
     index = OrderedDict()
 
-    # we store the output layer at the end in its own file, and keep it at top of index
-    index['output_layer.weight'] = f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors"
-    output_layer = convert_to_torch(special_layers['output_layer.weight'])
-    fname = f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors"
-    save_file({'output_layer.weight':output_layer},output_dir/fname)
+    model_conversion_plan = list()
 
-    # now that we have instances to each, let's store things by order of layers for better loading
+    file_num = 1
+    model_conversion_plan.append((file_num, (('special', 'embedding.word_embeddings.weight'),)))
+    file_num += 1
+
     for layer in range(layer_count):
-        # hacky way of positioning standalone layers:
-        if layer == 0:
-            model_map['embedding.word_embeddings.weight'] = special_layers['embedding.word_embeddings.weight']
-        elif layer == layer_count-1:
-            model_map['final_layernorm.weight'] = special_layers['final_layernorm.weight']
-            model_map['final_layernorm.bias'] = special_layers['final_layernorm.bias']
+        file_conversion_plan = []
+        for key in model_map.keys():
+            file_conversion_plan.append(('layer', key, layer))
+        model_conversion_plan.append((file_num, tuple(file_conversion_plan)))
+        file_num += 1
 
+    file_conversion_plan = []
+    for tensor_name in ['final_layernorm.weight', 'final_layernorm.bias', 'output_layer.weight']:
+        file_conversion_plan.append(('special', tensor_name))
+    model_conversion_plan.append((file_num, tuple(file_conversion_plan)))
+    file_num += 1
+
+    for (file_num, file_conversion_plan) in model_conversion_plan:
         sharded_state_dict = dict()
-        fname = f"model-{layer+1:05}-of-{layer_count+1:05}.safetensors"
+        fname = f"model-{file_num:05}-of-{len(model_conversion_plan):05}.safetensors"
 
-        for key,arr in tqdm(model_map.items()):
-            lnum = layer
-            print(f"{key}: {arr.shape}")
-            if arr.shape[0] <= layer:
-                lnum = 0
-            k = layer_mappings[key].replace("{lnum}",str(layer))
-            sharded_state_dict[k] = convert_to_torch(arr[lnum,:])
+        for tensor_conversion_plan in file_conversion_plan:
+            tensor_type = tensor_conversion_plan[0]
+            key = tensor_conversion_plan[1]
+            k = layer_mappings[key]
+            if tensor_type == "special":
+                arr = special_layers[key]
+            elif tensor_type == "layer":
+                layer_num = tensor_conversion_plan[2]
+                arr = model_map[key]
+                arr = arr[layer_num,:]
+                k = k.replace("{lnum}",str(layer_num))
+
+            print(f"converting {key} of shape {arr.shape} to {k} ")
+            sharded_state_dict[k] = convert_to_torch(arr)
             index[k] = fname
 
         save_file(sharded_state_dict,output_dir/fname)
@@ -163,8 +174,6 @@ def convert_nemo_model(model_dir: Path, output_dir: Path):
         gc.collect()
 
         print("saved",fname)
-        if layer == 0:
-            del model_map['embedding.word_embeddings.weight']
 
     print("done, writing index")
     safetensor_index = OrderedDict()
