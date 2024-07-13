@@ -64,6 +64,14 @@ def convert_nemo_config(model_dir: Path, output_dir: Path):
     print("Writing tokenizer model")
     shutil.copy2(tokenizer_path, output_dir/"tokenizer.model")
 
+    added_tokens=dict()
+    for i, piece in enumerate(sentencepiece_model.pieces):
+        if piece.type == sentencepiece_model.SentencePiece.USER_DEFINED:
+            added_tokens[piece.piece] = i
+
+    print("Writing added_tokens.json")
+    (output_dir/'added_tokens.json').write_text(json.dumps(added_tokens, indent=2))
+
     print("Creating config.json")
     hf_config = {
         "architectures": ["NemotronForCausalLM"],
