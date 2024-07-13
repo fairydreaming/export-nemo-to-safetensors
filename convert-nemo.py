@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import torch
 import tensorstore # needed for bfloat16 on zarr
 import zarr
@@ -8,6 +10,9 @@ import gc
 from tqdm import tqdm
 from collections import OrderedDict
 import json
+import argparse
+import os
+import yaml
 
 layer_mappings = {
         'layers.mlp.linear_fc1.layer_norm_bias': 'model.layers.{lnum}.mlp.linear_fc1.layer_norm.bias',
@@ -33,12 +38,12 @@ def convert_to_torch(tensor):
     return tensor
 
 
-def convert_nemo(path: Path):
+def convert_nemo(model_dir: Path, output_dir: Path):
     model_map = {}
     layer_count = 0
     special_layers = {}
 
-    for subdir in path.iterdir():
+    for subdir in model_dir.iterdir():
         if not subdir.is_dir() or not (subdir / '.zarray').exists():
             continue
         sharded_state_dict = {}
@@ -69,7 +74,8 @@ def convert_nemo(path: Path):
     # we store the output layer at the end in its own file, and keep it at top of index
     index['output_layer.weight'] = f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors"
     output_layer = convert_to_torch(special_layers['output_layer.weight'])
-    save_file({'output_layer.weight':output_layer},f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors")
+    fname = f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors"
+    save_file({'output_layer.weight':output_layer},output_dir/fname)
 
     # now that we have instances to each, let's store things by order of layers for better loading
     for layer in range(layer_count):
@@ -92,7 +98,7 @@ def convert_nemo(path: Path):
             sharded_state_dict[k] = convert_to_torch(arr[lnum,:])
             index[k] = fname
 
-        save_file(sharded_state_dict,fname)
+        save_file(sharded_state_dict,output_dir/fname)
 
         # cleanup to save RAM
         del sharded_state_dict
@@ -107,8 +113,17 @@ def convert_nemo(path: Path):
     safetensor_index['metadata'] = OrderedDict()
     safetensor_index['metadata']['total_size'] = 0
     safetensor_index['weight_map'] = index
-    with open('model.safetensors.index.json','w') as f:
-        f.write(json.dumps(safetensor_index))
+    (output_dir/'model.safetensors.index.json').write_text(json.dumps(safetensor_index))
 
-if __name__ == "__main__":
-    convert_nemo(Path.cwd())
+def dir_path(string):
+    if os.path.isdir(string):
+        return Path(string)
+    else:
+        raise NotADirectoryError(string)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("model_dir", help = "Directory containing the Nemo model files", type=dir_path)
+    parser.add_argument("output_dir", help = "Output directory", type=dir_path)
+    args = parser.parse_args()
+    convert_nemo(args.model_dir, args.output_dir)
