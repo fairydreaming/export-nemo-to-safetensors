@@ -13,6 +13,11 @@ import json
 import argparse
 import os
 import yaml
+import shutil
+
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+from sentencepiece import SentencePieceProcessor
+from sentencepiece import sentencepiece_model_pb2 as model
 
 layer_mappings = {
         'layers.mlp.linear_fc1.layer_norm_bias': 'model.layers.{lnum}.mlp.linear_fc1.layer_norm.bias',
@@ -37,13 +42,66 @@ def convert_to_torch(tensor):
         tensor = torch.from_numpy(tensor)
     return tensor
 
+activation_mapping = {
+    "squared-relu": "relu2",
+}
 
-def convert_nemo(model_dir: Path, output_dir: Path):
+def convert_nemo_config(model_dir: Path, output_dir: Path):
+    print("Reading model_config.yaml")
+    with (model_dir/'model_config.yaml').open() as f:
+        model_config = yaml.safe_load(f);
+
+    tokenizer_model_filename = model_config["tokenizer"]["tokenizer_model"].removeprefix("nemo:")
+    tokenizer_path = model_dir/tokenizer_model_filename
+
+    print("Reading tokenizer model from " + str(tokenizer_path))
+    sentencepiece_model = model.ModelProto()
+    sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
+
+    sp = SentencePieceProcessor()
+    sp.LoadFromFile(str(tokenizer_path))
+
+    print("Writing tokenizer model")
+    shutil.copy2(tokenizer_path, output_dir/"tokenizer.model")
+
+    print("Creating config.json")
+    hf_config = {
+        "architectures": ["NemotronForCausalLM"],
+        "attention_bias": model_config["bias"],
+        "attention_dropout": model_config["attention_dropout"],
+        "unk_token_id": sentencepiece_model.trainer_spec.unk_id,
+        "bos_token_id": sentencepiece_model.trainer_spec.bos_id,
+        "eos_token_id": sentencepiece_model.trainer_spec.eos_id,
+        "pad_token_id": sentencepiece_model.trainer_spec.pad_id,
+        "hidden_act": activation_mapping[model_config["activation"]],
+        "hidden_size": model_config["hidden_size"],
+        "initializer_range": 0.0063,
+        "intermediate_size": model_config["ffn_hidden_size"],
+        "max_position_embeddings": model_config["max_position_embeddings"],
+        "model_type": "nemotron",
+        "num_attention_heads": model_config["num_attention_heads"],
+        "num_hidden_layers": model_config["num_layers"],
+        "num_key_value_heads": model_config["num_query_groups"],
+        "pretraining_tp": 1,
+        "layer_norm_eps": model_config["layernorm_epsilon"],
+        "rope_scaling": None,
+        "partial_rotary_factor": model_config["rotary_percentage"], 
+        "rope_theta": float(model_config["rotary_base"]) if "rotary_base" in model_config else 10000.0,
+        "tie_word_embeddings": model_config["share_embeddings_and_output_weights"],
+        "torch_dtype": "bfloat16",
+        "transformers_version": "4.40.0.dev0",
+        "use_cache": True,
+        "vocab_size": sp.get_piece_size()
+    }
+    print("Writing config.json")
+    (output_dir/'config.json').write_text(json.dumps(hf_config, indent=2))
+
+def convert_nemo_model(model_dir: Path, output_dir: Path):
     model_map = {}
     layer_count = 0
     special_layers = {}
 
-    for subdir in model_dir.iterdir():
+    for subdir in (model_dir/"model_weights").iterdir():
         if not subdir.is_dir() or not (subdir / '.zarray').exists():
             continue
         sharded_state_dict = {}
@@ -126,4 +184,5 @@ if __name__ == '__main__':
     parser.add_argument("model_dir", help = "Directory containing the Nemo model files", type=dir_path)
     parser.add_argument("output_dir", help = "Output directory", type=dir_path)
     args = parser.parse_args()
-    convert_nemo(args.model_dir, args.output_dir)
+    convert_nemo_config(args.model_dir, args.output_dir)
+    convert_nemo_model(args.model_dir, args.output_dir)
