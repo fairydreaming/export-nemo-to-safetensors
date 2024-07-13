@@ -10,18 +10,18 @@ from collections import OrderedDict
 import json
 
 layer_mappings = {
-        'layers.mlp.linear_fc1.layer_norm_bias': 'model.layers.{lnum}.mlp.input_layernorm.weight',
-        'layers.mlp.linear_fc1.layer_norm_weight': 'model.layers.{lnum}.mlp.input_layernorm.bias',
-        'layers.mlp.linear_fc1.weight': 'model.layers.{lnum}.mlp.up_proj.weight',
-        'layers.mlp.linear_fc2.weight': 'model.layers.{lnum}.mlp.down_proj.weight',
-        'layers.self_attention.linear_qkv.weight': 'model.layers.{lnum}.self_attn.qkv_proj.weight',
-        'layers.self_attention.linear_proj.weight': 'model.layers.{lnum}.self_attn.o_proj.weight',
-        'layers.self_attention.linear_qkv.layer_norm_bias': 'model.layers.{lnum}.post_attention_layernorm.bias',
-        'layers.self_attention.linear_qkv.layer_norm_weight': 'model.layers.{lnum}.post_attention_layernorm.weight',
-        'embedding.word_embeddings.weight': 'model.embed_tokens.weight',
-        'final_layernorm.weight': 'model.norm.weight',
-        'final_layernorm.bias': 'model.norm.bias',
-        'output_layer.weight': 'lm_head.weight'
+        'layers.mlp.linear_fc1.layer_norm_bias': 'model.layers.{lnum}.mlp.linear_fc1.layer_norm.bias',
+        'layers.mlp.linear_fc1.layer_norm_weight': 'model.layers.{lnum}.mlp.linear_fc1.layer_norm.weight',
+        'layers.mlp.linear_fc1.weight': 'model.layers.{lnum}.mlp.linear_fc1.weight',
+        'layers.mlp.linear_fc2.weight': 'model.layers.{lnum}.mlp.linear_fc2.weight',
+        'layers.self_attention.linear_qkv.weight': 'model.layers.{lnum}.self_attention.linear_qkv.weight',
+        'layers.self_attention.linear_proj.weight': 'model.layers.{lnum}.self_attention.linear_proj.weight',
+        'layers.self_attention.linear_qkv.layer_norm_bias': 'model.layers.{lnum}.self_attention.linear_qkv.layer_norm.bias',
+        'layers.self_attention.linear_qkv.layer_norm_weight': 'model.layers.{lnum}.self_attention.linear_qkv.layer_norm.weight',
+        'embedding.word_embeddings.weight': 'embedding.word_embeddings.weight',
+        'final_layernorm.weight': 'final_layernorm.weight',
+        'final_layernorm.bias': 'final_layernorm.bias',
+        'output_layer.weight': 'output_layer.weight'
 }
 
 def convert_to_torch(tensor):
@@ -67,9 +67,9 @@ def convert_nemo(path: Path):
     index = OrderedDict()
 
     # we store the output layer at the end in its own file, and keep it at top of index
-    index['lm_head.weight'] = f"model-{layer_count+1:05}-of-{layer_count+1:05}"
+    index['output_layer.weight'] = f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors"
     output_layer = convert_to_torch(special_layers['output_layer.weight'])
-    save_file({'lm_head.weight':output_layer},f"model-{layer_count+1:05}-of-{layer_count+1:05}")
+    save_file({'output_layer.weight':output_layer},f"model-{layer_count+1:05}-of-{layer_count+1:05}.safetensors")
 
     # now that we have instances to each, let's store things by order of layers for better loading
     for layer in range(layer_count):
@@ -85,10 +85,11 @@ def convert_nemo(path: Path):
 
         for key,arr in tqdm(model_map.items()):
             lnum = layer
-            if arr.shape[0] < layer:
+            print(f"{key}: {arr.shape}")
+            if arr.shape[0] <= layer:
                 lnum = 0
             k = layer_mappings[key].replace("{lnum}",str(layer))
-            shared_state_dict[k] = convert_to_torch(arr[lnum,:])
+            sharded_state_dict[k] = convert_to_torch(arr[lnum,:])
             index[k] = fname
 
         save_file(sharded_state_dict,fname)
