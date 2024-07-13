@@ -10,6 +10,7 @@ Example workflow:
 ```
 pip install pip install torch tensorstore zarr numpy safetensors pyyaml tqdm sentencepiece protobuf
 huggingface-cli download "nvidia/Nemotron-4-340B-Instruct"
+mkdir ./Nemotron-4-safetensors
 python3 convert-nemo.py ~/.cache/huggingface/hub/models--nvidia--Nemotron-4-340B-Instruct/snapshots/ac75bfbc2fb10d07fa90813707c18aebecdb9024/ ./Nemotron-4-safetensors
 ```
 
